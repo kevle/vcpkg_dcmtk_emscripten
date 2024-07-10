@@ -1,0 +1,135 @@
+diff --git a/CMake/GenerateDCMTKConfigure.cmake b/CMake/GenerateDCMTKConfigure.cmake
+index 8d3b4fc60..f64be2e05 100644
+--- a/CMake/GenerateDCMTKConfigure.cmake
++++ b/CMake/GenerateDCMTKConfigure.cmake
+@@ -1454,6 +1454,7 @@ function(INSPECT_FUNDAMENTAL_ARITHMETIC_TYPES)
+       endif()
+     endif()
+     if(NOT DEFINED DCMTK_NO_TRY_RUN)
++      set(OUTPUT "")
+       DCMTK_TRY_RUN(
+         RESULT COMPILED
+         "${DCMTK_BINARY_DIR}/CMakeTmp/Arith"
+@@ -1466,6 +1467,7 @@ function(INSPECT_FUNDAMENTAL_ARITHMETIC_TYPES)
+       if(COMPILED)
+         if(NOT RESULT)
+           message(STATUS "${OUTPUT}")
++          # file(WRITE "${ARITH_H_FILE}" "${OUTPUT}")
+           if(CMAKE_CROSSCOMPILING)
+             if(ANDROID)
+               DCMTK_ANDROID_PULL(DCMTK_ANDROID_EMULATOR_INSTANCE "${ARITH_H_FILE}" DESTINATION "${ARITH_H_DESTINATION}")
+diff --git a/CMake/dcmtkTryRun.cmake b/CMake/dcmtkTryRun.cmake
+index 9c68ff075..9b18cd8bc 100644
+--- a/CMake/dcmtkTryRun.cmake
++++ b/CMake/dcmtkTryRun.cmake
+@@ -62,7 +62,9 @@ function(DCMTK_TRY_RUN_CROSS RUN_RESULT_VAR COMPILE_RESULT_VAR bindir srcfile)
+                 ERROR_VARIABLE "${DCMTK_TRY_RUN_RUN_OUTPUT_VARIABLE}"
+             )
+         else()
+-            message(WARNING "Emulation for your target platform is not available, please fill in the required configure test results manually.")
++            if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
++                message(WARNING "Emulation for your target platform is not available, please fill in the required configure test results manually.")
++            endif()
+             try_run("${RUN_RESULT_VAR}" "${COMPILE_RESULT_VAR}" "${bindir}" "${srcfile}" ${ARGN})
+             return()
+         endif()
+diff --git a/config/tests/arith.cc b/config/tests/arith.cc
+index d1949366d..5a00d4d19 100644
+--- a/config/tests/arith.cc
++++ b/config/tests/arith.cc
+@@ -25,6 +25,10 @@
+ //       before this program is used.
+ #include "../math.cc"
+ 
++#define DCMTK_UNDEF_SANITIZER
++#include <sstream>
++#include <string>
++
+ #ifdef HAVE_FENV_H
+ // For controlling floating point exceptions on Unix like systems.
+ #include <fenv.h>
+@@ -53,7 +57,7 @@
+ 
+ // hackish definition of cout, as we can't depend on
+ // OFConsole.
+-#define COUT STD_NAMESPACE cout
++#define COUT STD_NAMESPACE cerr
+ 
+ // define sigjmp_buf if it isn't already
+ #ifndef HAVE_SIGJMP_BUF
+@@ -169,6 +173,10 @@ static int test_trap( const FN& fn )
+     // means "normal exception".
+     catch(...){return 2;}
+ #endif
++
++#ifdef DCMTK_UNDEF_SANITIZER
++    return 4;
++#endif
+     // Nothing happened, so we return 0, for
+     // "nothing happened". Note: since MinGW's
+     // crazy SEH things are crazy, MinGW will always
+@@ -338,7 +346,7 @@ static void provoke_snan()
+     _controlfp( _controlfp(0,0) & ~_EM_INVALID, _MCW_EM );
+ #elif defined(__APPLE__) && !defined(__aarch64__)
+     _MM_SET_EXCEPTION_MASK( _MM_GET_EXCEPTION_MASK() & ~_MM_MASK_INVALID );
+-#elif defined(HAVE_FENV_H) && defined(HAVE_PROTOTYPE_FEENABLEEXCEPT)
++#elif defined(HAVE_FENV_H) && defined(HAVE_PROTOTYPE_FEENABLEEXCEPT) && defined(FE_INVALID)
+     feenableexcept( FE_INVALID );
+ #elif defined(HAVE_IEEEFP_H) && !defined(__CYGWIN__)
+     // Cygwin unfortunately seems to have <ieeefp.h> but no implementation of fgetmask/fpsetmask
+@@ -380,11 +388,11 @@ static int test_snan( STD_NAMESPACE ostream& out, const char* name )
+ #ifdef HAVE_WINDOWS_H
+     _clearfp();
+     _controlfp( _controlfp(0,0) | _EM_INVALID, _MCW_EM );
+-#elif defined(HAVE_FENV_H)
++#elif defined(HAVE_FENV_H) && defined(FE_INVALID)
+     feclearexcept( FE_INVALID );
+ #if defined(__APPLE__) && !defined(__aarch64__)
+     _MM_SET_EXCEPTION_MASK( _MM_GET_EXCEPTION_MASK() | _MM_MASK_INVALID );
+-#elif defined(HAVE_FENV_H) && defined(HAVE_PROTOTYPE_FEENABLEEXCEPT)
++#elif defined(HAVE_FENV_H) && defined(HAVE_PROTOTYPE_FEENABLEEXCEPT) && defined(FE_INVALID)
+     fedisableexcept( FE_INVALID );
+ #elif defined(HAVE_IEEEFP_H) && !defined(__CYGWIN__)
+     // Cygwin unfortunately seems to have <ieeefp.h> but no implementation of fgetmask/fpsetmask
+@@ -491,7 +499,7 @@ static void test_tinyness_before( STD_NAMESPACE ostream& out, const char* name )
+         out,
+ #ifdef HAVE_WINDOWS_H
+         _statusfp() & _EM_UNDERFLOW,
+-#elif defined(HAVE_FENV_H)
++#elif defined(HAVE_FENV_H) && defined(FE_UNDERFLOW)
+         fetestexcept( FE_UNDERFLOW ),
+ #else
+         0,
+@@ -520,7 +528,7 @@ static void test_denorm_loss( STD_NAMESPACE ostream& out, const char* name )
+         out,
+ #ifdef HAVE_WINDOWS_H
+         _statusfp() & _EM_UNDERFLOW,
+-#elif defined(HAVE_FENV_H)
++#elif defined(HAVE_FENV_H) && defined(FE_UNDERFLOW)
+         fetestexcept( FE_UNDERFLOW ),
+ #else
+         0,
+@@ -561,7 +569,7 @@ int main( int argc, char** argv )
+         return 1;
+     }
+ 
+-    STD_NAMESPACE ofstream out( argv[1] );
++    STD_NAMESPACE ostringstream out;
+ 
+     out << "#ifndef CONFIG_ARITH_H" << '\n';
+     out << "#define CONFIG_ARITH_H" << '\n';
+@@ -646,6 +654,14 @@ int main( int argc, char** argv )
+     out << "#define DCMTK_ROUND_STYLE " << FLT_ROUNDS << '\n';
+     out << '\n';
+     out << "#endif // CONFIG_ARITH_H" << '\n';
++    
++    STD_NAMESPACE string out_str = out.str();
++
++    STD_NAMESPACE cerr << out_str;
++
++    STD_NAMESPACE ofstream fout(argv[1]);
++    fout << out_str;
++    fout.close();
+ 
+     return 0;
+ }
